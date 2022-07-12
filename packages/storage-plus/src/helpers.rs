@@ -96,11 +96,13 @@ pub(crate) fn encode_length(namespace: &[u8]) -> [u8; 2] {
 pub(crate) fn query_raw<Q: CustomQuery>(
     querier: &QuerierWrapper<Q>,
     contract_addr: Addr,
-    key: Binary,
+    code_hash: String,
+    msg: Binary,
 ) -> StdResult<Binary> {
-    let request: QueryRequest<Q> = WasmQuery::Raw {
+    let request: QueryRequest<Q> = WasmQuery::Smart {
         contract_addr: contract_addr.into(),
-        key,
+        code_hash,
+        msg,
     }
     .into();
 

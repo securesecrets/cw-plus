@@ -99,10 +99,11 @@ where
         &self,
         querier: &QuerierWrapper<Q>,
         remote_contract: Addr,
+        remote_contract_code_hash: String,
         k: K,
     ) -> StdResult<Option<T>> {
         let key = self.key(k).storage_key.into();
-        let result = query_raw(querier, remote_contract, key)?;
+        let result = query_raw(querier, remote_contract, remote_contract_code_hash, key)?;
         if result.is_empty() {
             Ok(None)
         } else {

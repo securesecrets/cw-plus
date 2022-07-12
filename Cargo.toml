@@ -1,9 +1,8 @@
 [workspace]
 members = [
-  ##"packages/multi-test",
+  "packages/multi-test",
   "packages/storage-plus",
   "packages/utils",
-  "packages/controllers"
 ]
 
 [profile.release.package.cw1-subkeys]
