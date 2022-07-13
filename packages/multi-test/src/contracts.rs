@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display};
 use std::ops::Deref;
@@ -10,6 +11,18 @@ use cosmwasm_std::{
 };
 
 use anyhow::{anyhow, bail, Result as AnyResult};
+
+/// Info needed to instantiate a Secret contract.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ContractInstantiationInfo {
+    pub code_id: u64,
+    pub code_hash: String,
+}
+
+/// Generates a code hash.
+pub fn gen_test_hash(code_id: u64) -> String {
+    format!("secret_network_test_contract_{}", code_id)
+}
 
 /// Interface to call into a Contract
 pub trait Contract<T, Q = Empty>

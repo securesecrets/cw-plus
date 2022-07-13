@@ -3,12 +3,38 @@ use std::fmt;
 use std::ops::Deref;
 
 use cosmwasm_std::{
-    to_binary, Addr, Api, Attribute, BankMsg, Binary, BlockInfo, Coin, ContractInfo,
-    ContractInfoResponse, CustomQuery, Deps, DepsMut, Env, Event, MessageInfo, Order, Querier,
-    QuerierWrapper, Record, Reply, ReplyOn, Response, StdResult, Storage, SubMsg, SubMsgResponse,
-    SubMsgResult, TransactionInfo, WasmMsg, WasmQuery,
+    to_binary,
+    Addr,
+    Api,
+    Attribute,
+    BankMsg,
+    Binary,
+    BlockInfo,
+    Coin,
+    ContractInfo,
+    ContractInfoResponse,
+    CustomQuery,
+    Deps,
+    DepsMut,
+    Env,
+    Event,
+    MessageInfo,
+    Querier,
+    QuerierWrapper, //Record, Order
+    Reply,
+    ReplyOn,
+    Response,
+    StdResult,
+    Storage,
+    SubMsg,
+    SubMsgResponse,
+    SubMsgResult,
+    TransactionInfo,
+    WasmMsg,
+    WasmQuery,
 };
 use cosmwasm_storage::{prefixed, prefixed_read, PrefixedStorage, ReadonlyPrefixedStorage};
+use nanoid::nanoid;
 use prost::Message;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -17,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use cw_storage_plus::Map;
 
 use crate::app::{CosmosRouter, RouterQuerier};
-use crate::contracts::Contract;
+use crate::contracts::{gen_test_hash, Contract};
 use crate::error::Error;
 use crate::executor::AppResponse;
 use crate::transactions::transactional;
@@ -25,6 +51,14 @@ use cosmwasm_std::testing::mock_wasmd_attr;
 
 use anyhow::{bail, Context, Result as AnyResult};
 
+/// Alphabet used by nanoid for generating addresses. Has the characters '-' and '_' removed and upper case characters so that generated address is normalized.
+/// Very low probability of collisions - https://alex7kom.github.io/nano-nanoid-cc.
+/// Using address length of 40.
+const SAFE_NANOID: [char; 36] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
+    'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+];
+const SAFE_NANOID_LENGTH: usize = 40;
 // Contract state is kept in Storage, separate from the contracts themselves
 const CONTRACTS: Map<&Addr, ContractData> = Map::new("contracts");
 
@@ -52,6 +86,10 @@ impl WasmSudo {
 pub struct ContractData {
     /// Identifier of stored contract code
     pub code_id: usize,
+    /// Hash of stored contract code
+    pub code_hash: String,
+    /// Contract address
+    pub address: Addr,
     /// Address of account who initially instantiated the contract
     pub creator: Addr,
     /// Optional address of account who can execute migrations
@@ -127,19 +165,19 @@ where
         request: WasmQuery,
     ) -> AnyResult<Binary> {
         match request {
-            WasmQuery::Smart { contract_addr, msg } => {
+            WasmQuery::Smart {
+                contract_addr,
+                code_hash: _,
+                msg,
+            } => {
                 let addr = api.addr_validate(&contract_addr)?;
                 self.query_smart(addr, api, storage, querier, block, msg.into())
-            }
-            WasmQuery::Raw { contract_addr, key } => {
-                let addr = api.addr_validate(&contract_addr)?;
-                Ok(self.query_raw(addr, storage, &key))
             }
             WasmQuery::ContractInfo { contract_addr } => {
                 let addr = api.addr_validate(&contract_addr)?;
                 let contract = self.load_contract(storage, &addr)?;
-                let mut res = ContractInfoResponse::new(contract.code_id as u64, contract.creator);
-                res.admin = contract.admin.map(|x| x.into());
+                let res = ContractInfoResponse::new(contract.code_id as u64, contract.creator);
+                //res.admin = contract.admin.map(|x| x.into());
                 to_binary(&res).map_err(Into::into)
             }
             query => bail!(Error::UnsupportedWasmQuery(query)),
@@ -192,10 +230,10 @@ impl<ExecC, QueryC> WasmKeeper<ExecC, QueryC> {
             .map_err(Into::into)
     }
 
-    pub fn dump_wasm_raw(&self, storage: &dyn Storage, address: &Addr) -> Vec<Record> {
-        let storage = self.contract_storage_readonly(storage, address);
-        storage.range(None, None, Order::Ascending).collect()
-    }
+    // pub fn dump_wasm_raw(&self, storage: &dyn Storage, address: &Addr) -> Vec<Record> {
+    //     let storage = self.contract_storage_readonly(storage, address);
+    //     storage.range(None, None, Order::Ascending).collect()
+    // }
 
     fn contract_namespace(&self, contract: &Addr) -> Vec<u8> {
         let mut name = b"contract_data/".to_vec();
@@ -340,6 +378,7 @@ where
         match wasm_msg {
             WasmMsg::Execute {
                 contract_addr,
+                code_hash: _,
                 msg,
                 funds,
             } => {
@@ -377,7 +416,7 @@ where
                 Ok(res)
             }
             WasmMsg::Instantiate {
-                admin,
+                code_hash: _,
                 code_id,
                 msg,
                 funds,
@@ -391,7 +430,7 @@ where
                     storage,
                     code_id as usize,
                     sender.clone(),
-                    admin.map(Addr::unchecked),
+                    None, //admin.map(Addr::unchecked),
                     label,
                     block.height,
                 )?;
@@ -436,44 +475,44 @@ where
                 res.data = Some(instantiate_response(res.data, &contract_addr));
                 Ok(res)
             }
-            WasmMsg::Migrate {
-                contract_addr,
-                new_code_id,
-                msg,
-            } => {
-                let contract_addr = api.addr_validate(&contract_addr)?;
+            // WasmMsg::Migrate {
+            //     contract_addr,
+            //     new_code_id,
+            //     msg,
+            // } => {
+            //     let contract_addr = api.addr_validate(&contract_addr)?;
 
-                // check admin status and update the stored code_id
-                let new_code_id = new_code_id as usize;
-                if !self.codes.contains_key(&new_code_id) {
-                    bail!("Cannot migrate contract to unregistered code id");
-                }
-                let mut data = self.load_contract(storage, &contract_addr)?;
-                if data.admin != Some(sender) {
-                    bail!("Only admin can migrate contract: {:?}", data.admin);
-                }
-                data.code_id = new_code_id;
-                self.save_contract(storage, &contract_addr, &data)?;
+            //     // check admin status and update the stored code_id
+            //     let new_code_id = new_code_id as usize;
+            //     if !self.codes.contains_key(&new_code_id) {
+            //         bail!("Cannot migrate contract to unregistered code id");
+            //     }
+            //     let mut data = self.load_contract(storage, &contract_addr)?;
+            //     if data.admin != Some(sender) {
+            //         bail!("Only admin can migrate contract: {:?}", data.admin);
+            //     }
+            //     data.code_id = new_code_id;
+            //     self.save_contract(storage, &contract_addr, &data)?;
 
-                // then call migrate
-                let res = self.call_migrate(
-                    contract_addr.clone(),
-                    api,
-                    storage,
-                    router,
-                    block,
-                    msg.to_vec(),
-                )?;
+            //     // then call migrate
+            //     let res = self.call_migrate(
+            //         contract_addr.clone(),
+            //         api,
+            //         storage,
+            //         router,
+            //         block,
+            //         msg.to_vec(),
+            //     )?;
 
-                let custom_event = Event::new("migrate")
-                    .add_attribute(CONTRACT_ATTR, &contract_addr)
-                    .add_attribute("code_id", new_code_id.to_string());
-                let (res, msgs) = self.build_app_response(&contract_addr, custom_event, res);
-                let mut res =
-                    self.process_response(api, router, storage, block, contract_addr, res, msgs)?;
-                res.data = execute_response(res.data);
-                Ok(res)
-            }
+            //     let custom_event = Event::new("migrate")
+            //         .add_attribute(CONTRACT_ATTR, &contract_addr)
+            //         .add_attribute("code_id", new_code_id.to_string());
+            //     let (res, msgs) = self.build_app_response(&contract_addr, custom_event, res);
+            //     let mut res =
+            //         self.process_response(api, router, storage, block, contract_addr, res, msgs)?;
+            //     res.data = execute_response(res.data);
+            //     Ok(res)
+            // }
             msg => bail!(Error::UnsupportedWasmMsg(msg)),
         }
     }
@@ -516,7 +555,8 @@ where
                     }),
                 };
                 // do reply and combine it with the original response
-                let reply_res = self._reply(api, router, storage, block, contract, reply)?;
+                let reply_res =
+                    self._reply(api, router, storage, block, contract.clone(), reply)?;
                 // override data
                 r.data = reply_res.data;
                 // append the events
@@ -654,10 +694,12 @@ where
 
         let info = ContractData {
             code_id,
+            code_hash: gen_test_hash(code_id as u64),
             creator,
             admin: admin.into(),
             label,
             created,
+            address: addr.clone(),
         };
         self.save_contract(storage, &addr, &info)?;
         Ok(addr)
@@ -760,11 +802,12 @@ where
         )?)
     }
 
-    fn get_env<T: Into<Addr>>(&self, address: T, block: &BlockInfo) -> Env {
+    fn get_env<T: Into<Addr>>(&self, address: T, code_hash: String, block: &BlockInfo) -> Env {
         Env {
             block: block.clone(),
             contract: ContractInfo {
                 address: address.into(),
+                code_hash,
             },
             transaction: Some(TransactionInfo { index: 0 }),
         }
@@ -788,7 +831,7 @@ where
             .get(&contract.code_id)
             .ok_or(Error::UnregisteredCodeId(contract.code_id))?;
         let storage = self.contract_storage_readonly(storage, &address);
-        let env = self.get_env(address, block);
+        let env = self.get_env(address, contract.code_hash, block);
 
         let deps = Deps {
             storage: storage.as_ref(),
@@ -824,7 +867,7 @@ where
         transactional(storage, |write_cache, read_store| {
             let mut contract_storage = self.contract_storage(write_cache, &address);
             let querier = RouterQuerier::new(router, api, read_store, block);
-            let env = self.get_env(address, block);
+            let env = self.get_env(address, contract.code_hash, block);
 
             let deps = DepsMut {
                 storage: contract_storage.as_mut(),
@@ -846,15 +889,10 @@ where
             .map_err(Into::into)
     }
 
-    // FIXME: better addr generation
-    fn next_address(&self, storage: &dyn Storage) -> Addr {
-        // FIXME: quite inefficient if we actually had 100s of contracts
-        let count = CONTRACTS
-            .range_raw(storage, None, None, Order::Ascending)
-            .count();
+    fn next_address(&self, _storage: &dyn Storage) -> Addr {
         // we make this longer so it is not rejected by tests
         // it is lowercase to be compatible with the MockApi implementation of cosmwasm-std >= 1.0.0-beta8
-        Addr::unchecked(format!("contract{}", count))
+        Addr::unchecked(nanoid!(SAFE_NANOID_LENGTH, &SAFE_NANOID))
     }
 }
 
@@ -972,10 +1010,12 @@ mod test {
             contract_data,
             ContractData {
                 code_id,
+                code_hash: gen_test_hash(code_id as u64),
                 creator: Addr::unchecked("foobar"),
                 admin: Some(Addr::unchecked("admin")),
                 label: "label".to_owned(),
                 created: 1000,
+                address: contract_addr.clone(),
             }
         );
 
@@ -1050,11 +1090,12 @@ mod test {
             .query(&api, &wasm_storage, &querier, &block, query)
             .unwrap();
 
-        let mut expected = ContractInfoResponse::new(code_id as u64, "foobar");
-        expected.admin = Some("admin".to_owned());
+        let expected = ContractInfoResponse::new(code_id as u64, "foobar");
+        //expected.admin = Some("admin".to_owned());
         assert_eq!(expected, from_slice(&info).unwrap());
     }
 
+    #[ignore]
     #[test]
     fn can_dump_raw_wasm_state() {
         let api = MockApi::default();
@@ -1077,12 +1118,10 @@ mod test {
 
         // make a contract with state
         let payout = coin(1500, "mlg");
-        let msg = payout::InstantiateMessage {
-            payout: payout.clone(),
-        };
+        let msg = payout::InstantiateMessage { payout };
         keeper
             .call_instantiate(
-                contract_addr.clone(),
+                contract_addr,
                 &api,
                 &mut wasm_storage,
                 &mock_router(),
@@ -1093,17 +1132,19 @@ mod test {
             .unwrap();
 
         // dump state
-        let state = keeper.dump_wasm_raw(&wasm_storage, &contract_addr);
-        assert_eq!(state.len(), 2);
-        // check contents
-        let (k, v) = &state[0];
-        assert_eq!(k.as_slice(), b"count");
-        let count: u32 = from_slice(v).unwrap();
-        assert_eq!(count, 1);
-        let (k, v) = &state[1];
-        assert_eq!(k.as_slice(), b"payout");
-        let stored_pay: payout::InstantiateMessage = from_slice(v).unwrap();
-        assert_eq!(stored_pay.payout, payout);
+
+        // Commented out because dump_wasm_raw is disabled since Record is not part of Secret Cosmwasm v1.
+        // let state = keeper.dump_wasm_raw(&wasm_storage, &contract_addr);
+        // assert_eq!(state.len(), 2);
+        // // check contents
+        // let (k, v) = &state[0];
+        // assert_eq!(k.as_slice(), b"count");
+        // let count: u32 = from_slice(v).unwrap();
+        // assert_eq!(count, 1);
+        // let (k, v) = &state[1];
+        // assert_eq!(k.as_slice(), b"payout");
+        // let stored_pay: payout::InstantiateMessage = from_slice(v).unwrap();
+        // assert_eq!(stored_pay.payout, payout);
     }
 
     #[test]

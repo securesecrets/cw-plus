@@ -1,13 +1,16 @@
 use std::fmt;
 
 use cosmwasm_std::{
-    to_binary, Addr, Attribute, BankMsg, Binary, Coin, CosmosMsg, Event, SubMsgResponse, WasmMsg,
+    to_binary, Addr, Attribute, BankMsg, Binary, Coin, ContractInfo, CosmosMsg, Event,
+    SubMsgResponse, WasmMsg,
 };
 use cw_utils::{parse_execute_response_data, parse_instantiate_response_data};
 use schemars::JsonSchema;
 use serde::Serialize;
 
 use anyhow::Result as AnyResult;
+
+use crate::contracts::ContractInstantiationInfo;
 
 #[derive(Default, Clone, Debug)]
 pub struct AppResponse {
@@ -73,25 +76,28 @@ where
     /// This is just a helper around execute()
     fn instantiate_contract<T: Serialize, U: Into<String>>(
         &mut self,
-        code_id: u64,
+        contract_info: ContractInstantiationInfo,
         sender: Addr,
         init_msg: &T,
         send_funds: &[Coin],
         label: U,
-        admin: Option<String>,
-    ) -> AnyResult<Addr> {
+        _admin: Option<String>,
+    ) -> AnyResult<ContractInfo> {
         // instantiate contract
         let init_msg = to_binary(init_msg)?;
         let msg = WasmMsg::Instantiate {
-            admin,
-            code_id,
+            code_id: contract_info.code_id,
+            code_hash: contract_info.code_hash.clone(),
             msg: init_msg,
             funds: send_funds.to_vec(),
             label: label.into(),
         };
         let res = self.execute(sender, msg.into())?;
         let data = parse_instantiate_response_data(res.data.unwrap_or_default().as_slice())?;
-        Ok(Addr::unchecked(data.contract_address))
+        Ok(ContractInfo {
+            address: Addr::unchecked(data.contract_address),
+            code_hash: contract_info.code_hash,
+        })
     }
 
     /// Execute a contract and process all returned messages.
@@ -100,13 +106,14 @@ where
     fn execute_contract<T: Serialize + std::fmt::Debug>(
         &mut self,
         sender: Addr,
-        contract_addr: Addr,
+        contract_info: ContractInfo,
         msg: &T,
         send_funds: &[Coin],
     ) -> AnyResult<AppResponse> {
         let binary_msg = to_binary(msg)?;
         let wrapped_msg = WasmMsg::Execute {
-            contract_addr: contract_addr.into_string(),
+            contract_addr: contract_info.address.into_string(),
+            code_hash: contract_info.code_hash,
             msg: binary_msg,
             funds: send_funds.to_vec(),
         };
@@ -121,18 +128,21 @@ where
     /// This is just a helper around execute()
     fn migrate_contract<T: Serialize>(
         &mut self,
-        sender: Addr,
-        contract_addr: Addr,
-        msg: &T,
-        new_code_id: u64,
+        _sender: Addr,
+        _contract_addr: Addr,
+        _msg: &T,
+        _new_code_id: u64,
     ) -> AnyResult<AppResponse> {
-        let msg = to_binary(msg)?;
-        let msg = WasmMsg::Migrate {
-            contract_addr: contract_addr.into(),
-            msg,
-            new_code_id,
-        };
-        self.execute(sender, msg.into())
+        AnyResult::Err(anyhow::Error::msg(
+            "Native Cosmos migration functionality is disabled on Secret Network.",
+        ))
+        // let msg = to_binary(msg)?;
+        // let msg = WasmMsg::Migrate {
+        //     contract_addr: contract_addr.into(),
+        //     msg,
+        //     new_code_id,
+        // };
+        // self.execute(sender, msg.into())
     }
 
     fn send_tokens(

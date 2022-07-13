@@ -87,7 +87,7 @@ where
     ) -> StdResult<T> {
         let request = WasmQuery::Smart {
             contract_addr: remote_contract.into(),
-            code_hash: remote_contract_code_hash.into(),
+            code_hash: remote_contract_code_hash,
             msg: self.storage_key.into(),
         };
         querier.query(&request.into())
